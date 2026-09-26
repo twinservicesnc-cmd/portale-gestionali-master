@@ -145,6 +145,34 @@ def home(db):
                     st.button("Indirizzo da configurare", disabled=True, key=f"no_url_{codice}", use_container_width=True)
 
 
+def cambia_password(db):
+    st.title("🔐 Cambia password")
+    username = st.session_state.get("username", "")
+    info = db["utenti"].get(username)
+    if not info:
+        st.error("Account non trovato.")
+        return
+    with st.form("cambia_password"):
+        attuale = st.text_input("Password attuale", type="password")
+        nuova = st.text_input("Nuova password", type="password")
+        conferma = st.text_input("Conferma nuova password", type="password")
+        aggiorna = st.form_submit_button("Aggiorna password", type="primary", use_container_width=True)
+    if aggiorna:
+        if not password_ok(attuale, info.get("password", "")):
+            st.error("La password attuale non è corretta.")
+        elif len(nuova) < 10:
+            st.error("La nuova password deve contenere almeno 10 caratteri.")
+        elif nuova != conferma:
+            st.error("La conferma non corrisponde alla nuova password.")
+        elif nuova == attuale:
+            st.error("La nuova password deve essere diversa da quella attuale.")
+        else:
+            info["password"] = password_hash(nuova)
+            audit(db, "Password modificata")
+            salva(db)
+            st.success("Password aggiornata correttamente.")
+
+
 def amministrazione_clienti(db):
     st.header("🏢 Clienti")
     with st.expander("Crea nuovo cliente", expanded=not bool(db["clienti"])):
@@ -293,7 +321,7 @@ with st.sidebar:
     st.title("🧩 Portale")
     info_utente = db["utenti"].get(st.session_state.get("username", ""), {})
     st.write(f"👤 {info_utente.get('nome', st.session_state.get('username', ''))}")
-    voci = ["🏠 I miei gestionali"]
+    voci = ["🏠 I miei gestionali", "🔐 Cambia password"]
     if st.session_state.get("ruolo") == "superadmin":
         voci.append("⚙️ Amministrazione")
     pagina = st.radio("Menu", voci)
@@ -304,5 +332,7 @@ with st.sidebar:
 
 if pagina == "⚙️ Amministrazione":
     amministrazione(db)
+elif pagina == "🔐 Cambia password":
+    cambia_password(db)
 else:
     home(db)
