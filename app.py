@@ -130,17 +130,22 @@ def carica():
     db.setdefault("credenziali", {})
     db.setdefault("versione", 1)
     # Migrazione automatica dei clienti creati dalla prima versione.
-    for cliente in db["clienti"].values():
+    for cliente_id, cliente in db["clienti"].items():
         cliente.setdefault("attivo", True)
         cliente.setdefault("stato_abbonamento", "attivo")
         cliente.setdefault("scadenza", "")
         if "assegnazioni" not in cliente:
             cliente["assegnazioni"] = {
-                codice: {"attivo": True, "scadenza": ""}
+                codice: {"attivo": True, "scadenza": "", "url": "", "istanza": ""}
                 for codice in cliente.get("moduli", [])
             }
+        for codice, assegnazione in cliente["assegnazioni"].items():
+            assegnazione.setdefault("attivo", True)
+            assegnazione.setdefault("scadenza", "")
+            assegnazione.setdefault("url", "")
+            assegnazione.setdefault("istanza", f"{codice}-{cliente_id}")
         cliente["moduli"] = list(cliente["assegnazioni"])
-    db["versione"] = max(int(db.get("versione", 1)), 2)
+    db["versione"] = max(int(db.get("versione", 1)), 3)
     return db
 
 
@@ -189,7 +194,8 @@ def login(db):
 
 def moduli_disponibili(db, cliente_id, superadmin=False):
     if superadmin:
-        autorizzati = set(db["moduli"])
+        return [(codice, modulo, {}) for codice, modulo in db["moduli"].items()
+                if modulo.get("attivo", True)]
     else:
         cliente = db["clienti"].get(cliente_id, {})
         if (not cliente.get("attivo", True)
@@ -204,7 +210,8 @@ def moduli_disponibili(db, cliente_id, superadmin=False):
             and (not data_valida(assegnazione.get("scadenza"))
                  or data_valida(assegnazione.get("scadenza")) >= date.today())
         }
-    return [(codice, modulo) for codice, modulo in db["moduli"].items()
+    return [(codice, modulo, cliente.get("assegnazioni", {}).get(codice, {}))
+            for codice, modulo in db["moduli"].items()
             if codice in autorizzati and modulo.get("attivo", True)]
 
 
@@ -219,12 +226,14 @@ def home(db):
         st.info("Nessun gestionale attivo è assegnato a questo account oppure l'accesso è scaduto.")
         return
     colonne = st.columns(3)
-    for indice, (codice, modulo) in enumerate(moduli):
+    for indice, (codice, modulo, assegnazione) in enumerate(moduli):
         with colonne[indice % 3]:
             with st.container(border=True):
                 st.subheader(f"{modulo.get('icona', '🧩')} {modulo.get('nome', codice)}")
                 st.write(modulo.get("descrizione", ""))
-                url = str(modulo.get("url", "")).strip()
+                # Per i clienti prevale sempre l'URL della loro istanza separata.
+                # Il superadmin continua a poter aprire l'URL generale del catalogo.
+                url = str(assegnazione.get("url") or modulo.get("url", "")).strip()
                 if url:
                     st.link_button("Apri gestionale", url, use_container_width=True)
                 else:
@@ -280,7 +289,10 @@ def amministrazione_clienti(db):
             db["clienti"][cliente_id] = {
                 "ragione_sociale": ragione.strip(), "nome_portale": nome_portale.strip(),
                 "colore": colore, "drive_folder_id": "", "moduli": moduli,
-                "assegnazioni": {m: {"attivo": True, "scadenza": scadenza.isoformat()} for m in moduli},
+                "assegnazioni": {
+                    m: {"attivo": True, "scadenza": scadenza.isoformat(), "url": "",
+                        "istanza": f"{m}-{cliente_id}"} for m in moduli
+                },
                 "stato_abbonamento": stato, "scadenza": scadenza.isoformat(),
                 "attivo": True, "creato_il": datetime.now().isoformat(timespec="seconds"),
             }
@@ -309,7 +321,11 @@ def amministrazione_clienti(db):
                 aggiorna = st.form_submit_button("Salva cliente")
             if aggiorna:
                 vecchie = cliente.get("assegnazioni", {})
-                assegnazioni = {m: vecchie.get(m, {"attivo": True, "scadenza": scadenza.isoformat()}) for m in moduli}
+                assegnazioni = {
+                    m: vecchie.get(m, {"attivo": True, "scadenza": scadenza.isoformat(),
+                                       "url": "", "istanza": f"{m}-{cliente_id}"})
+                    for m in moduli
+                }
                 cliente.update(ragione_sociale=nome.strip(), nome_portale=titolo.strip(), colore=colore,
                                moduli=moduli, assegnazioni=assegnazioni, attivo=attivo,
                                stato_abbonamento=stato, scadenza=scadenza.isoformat())
@@ -327,8 +343,21 @@ def amministrazione_clienti(db):
                     scad_modulo = col2.date_input(
                         "Scadenza", value=data_valida(assegnazione.get("scadenza")) or scadenza_attuale,
                         key=f"ass_scad_{cliente_id}_{codice}", label_visibility="collapsed")
+                    istanza = st.text_input(
+                        "Codice istanza", assegnazione.get("istanza", f"{codice}-{cliente_id}"),
+                        key=f"ass_istanza_{cliente_id}_{codice}")
+                    url_istanza = st.text_input(
+                        "URL specifico di questo cliente", assegnazione.get("url", ""),
+                        placeholder="https://nome-app-cliente.streamlit.app",
+                        key=f"ass_url_{cliente_id}_{codice}")
+                    if not url_istanza:
+                        st.caption("Finché l'URL specifico è vuoto viene usato quello generale del catalogo.")
                     if col3.button("Aggiorna", key=f"ass_salva_{cliente_id}_{codice}"):
-                        assegnazione.update(attivo=attivo_modulo, scadenza=scad_modulo.isoformat())
+                        if not url_valido(url_istanza.strip()):
+                            st.error("L'URL specifico deve iniziare con http:// oppure https://.")
+                            continue
+                        assegnazione.update(attivo=attivo_modulo, scadenza=scad_modulo.isoformat(),
+                                            url=url_istanza.strip(), istanza=istanza.strip())
                         audit(db, f"Aggiornata assegnazione {codice} per {cliente_id}")
                         salva(db)
                         st.rerun()
