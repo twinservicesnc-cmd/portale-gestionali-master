@@ -80,6 +80,36 @@ def password_ok(password, encoded):
         return False
 
 
+def applica_reset_superadmin(db):
+    """Applica una sola volta il reset richiesto tramite Streamlit Secrets."""
+    try:
+        nuova_password = str(st.secrets.get("PORTAL_ADMIN_RESET_PASSWORD", "")).strip()
+    except Exception:
+        nuova_password = os.environ.get("PORTAL_ADMIN_RESET_PASSWORD", "").strip()
+    if not nuova_password:
+        return False
+
+    impronta = hashlib.sha256(nuova_password.encode()).hexdigest()
+    if db.get("admin_reset_applicato") == impronta:
+        return False
+
+    admin = db.setdefault("utenti", {}).setdefault("superadmin", {})
+    admin.update({
+        "nome": admin.get("nome") or "Amministratore principale",
+        "password": password_hash(nuova_password),
+        "ruolo": "superadmin",
+        "cliente_id": "",
+        "attivo": True,
+    })
+    db["admin_reset_applicato"] = impronta
+    db.setdefault("audit", []).append({
+        "data_ora": datetime.now().isoformat(timespec="seconds"),
+        "utente": "sistema",
+        "azione": "Password superadmin ripristinata tramite Secrets",
+    })
+    return True
+
+
 def nuovo_database():
     return {
         "versione": 1,
@@ -146,6 +176,8 @@ def carica():
             assegnazione.setdefault("istanza", f"{codice}-{cliente_id}")
         cliente["moduli"] = list(cliente["assegnazioni"])
     db["versione"] = max(int(db.get("versione", 1)), 3)
+    if applica_reset_superadmin(db):
+        salva(db)
     return db
 
 
